@@ -1,0 +1,214 @@
+# Функция для создания GUI
+function Show-USBForge-GUI {
+    [xml]$xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" 
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" 
+        Title="USBForge - Создание загрузочной USB" Height="550" Width="600" WindowStartupLocation="CenterScreen">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Поле выбора ISO -->
+        <StackPanel Grid.Row="0" Orientation="Vertical" Margin="0,0,0,10">
+            <Label Content="Выберите ISO-образ:"/>
+            <StackPanel Orientation="Horizontal">
+                <TextBox x:Name="IsoPath" Width="350" Margin="0,0,10,0"/>
+                <Button Content="Обзор..." Width="80" x:Name="BrowseIso"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Выбор USB-диска -->
+        <StackPanel Grid.Row="1" Orientation="Vertical" Margin="0,0,0,10">
+            <Label Content="Выберите USB-накопитель:"/>
+            <ComboBox x:Name="UsbDrives" Width="450" Height="25"/>
+        </StackPanel>
+
+        <!-- Выбор схемы разметки -->
+        <StackPanel Grid.Row="2" Orientation="Vertical" Margin="0,0,0,10">
+            <Label Content="Выберите схему разметки:"/>
+            <StackPanel Orientation="Horizontal">
+                <RadioButton Content="GPT (FAT32)" GroupName="PartitionScheme" x:Name="GPT" IsChecked="True" Margin="0,0,10,0"/>
+                <RadioButton Content="MBR (NTFS)" GroupName="PartitionScheme" x:Name="MBR"/>
+                <RadioButton Content="exFAT (для больших файлов)" GroupName="PartitionScheme" x:Name="exFAT"/>
+            </StackPanel>
+        </StackPanel>
+
+        <!-- Выбор размера кластера -->
+        <StackPanel Grid.Row="3" Orientation="Vertical" Margin="0,0,0,10">
+            <Label Content="Выберите размер кластера:"/>
+            <ComboBox x:Name="ClusterSize" Width="150">
+                <ComboBoxItem>4096</ComboBoxItem>
+                <ComboBoxItem>8192</ComboBoxItem>
+                <ComboBoxItem>16384</ComboBoxItem>
+                <ComboBoxItem>32768</ComboBoxItem>
+            </ComboBox>
+        </StackPanel>
+
+        <!-- Опции для многозагрузочных носителей -->
+        <StackPanel Grid.Row="4" Orientation="Vertical" Margin="0,0,0,10">
+            <Label Content="Создать многозагрузочную USB?"/>
+            <CheckBox x:Name="MultiBoot" Content="Да, многозагрузочная флешка" />
+        </StackPanel>
+
+        <!-- Дополнительные функции для восстановления -->
+        <StackPanel Grid.Row="5" Orientation="Vertical" Margin="0,0,0,10">
+            <Label Content="Включить инструменты восстановления Windows?"/>
+            <CheckBox x:Name="RecoveryTools" Content="Да, добавить инструменты восстановления" />
+        </StackPanel>
+
+        <!-- Кнопка создания -->
+        <Button Grid.Row="6" Content="Создать загрузочную USB" HorizontalAlignment="Right" Width="200" Height="30" x:Name="CreateButton"/>
+    </Grid>
+</Window>
+"@
+
+    # Загрузка XAML
+    $reader = (New-Object System.Xml.XmlNodeReader $xaml)
+    $window = [Windows.Markup.XamlReader]::Load($reader)
+
+    # Привязка элементов
+    $IsoPathBox = $window.FindName("IsoPath")
+    $BrowseIsoButton = $window.FindName("BrowseIso")
+    $UsbDrivesComboBox = $window.FindName("UsbDrives")
+    $GPTButton = $window.FindName("GPT")
+    $MBRButton = $window.FindName("MBR")
+    $exFATButton = $window.FindName("exFAT")
+    $ClusterSizeComboBox = $window.FindName("ClusterSize")
+    $MultiBootCheckBox = $window.FindName("MultiBoot")
+    $RecoveryToolsCheckBox = $window.FindName("RecoveryTools")
+    $CreateButton = $window.FindName("CreateButton")
+
+    # Заполнение списка USB-устройств
+    $usbDrives = Get-Volume | Where-Object { $_.DriveType -eq 'Removable' }
+    foreach ($drive in $usbDrives) {
+        $UsbDrivesComboBox.Items.Add("$($drive.DriveLetter): $($drive.SizeRemaining / 1GB) GB свободно")
+    }
+
+    # Событие для выбора ISO
+    $BrowseIsoButton.Add_Click({
+        $dialog = New-Object -TypeName Microsoft.Win32.OpenFileDialog
+        $dialog.Filter = "ISO Files (*.iso)|*.iso"
+        if ($dialog.ShowDialog() -eq $true) {
+            $IsoPathBox.Text = $dialog.FileName
+        }
+    })
+
+    # Событие для кнопки создания
+    $CreateButton.Add_Click({
+        $isoPath = $IsoPathBox.Text
+        $usbDrive = $UsbDrivesComboBox.SelectedItem.ToString().Split(":")[0]
+        $scheme = if ($GPTButton.IsChecked) { "GPT" } elseif ($MBRButton.IsChecked) { "MBR" } else { "exFAT" }
+        $fileSystem = if ($scheme -eq "GPT") { "FAT32" } elseif ($scheme -eq "MBR") { "NTFS" } else { "exFAT" }
+        $clusterSize = $ClusterSizeComboBox.SelectedItem.ToString()
+        $multiBoot = $MultiBootCheckBox.IsChecked
+        $recoveryTools = $RecoveryToolsCheckBox.IsChecked
+
+        if (-not (Test-Path $isoPath)) {
+            [System.Windows.MessageBox]::Show("Выберите корректный ISO-образ.", "Ошибка", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            return
+        }
+
+        if (-not $usbDrive) {
+            [System.Windows.MessageBox]::Show("Выберите USB-накопитель.", "Ошибка", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            return
+        }
+
+        # Дополнительная проверка, чтобы убедиться, что выбранный диск — это USB
+        $selectedDrive = Get-Volume -DriveLetter $usbDrive
+        if ($selectedDrive.DriveType -ne 'Removable') {
+            [System.Windows.MessageBox]::Show("Выберите только USB-накопитель. Это не USB-устройство.", "Ошибка", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            return
+        }
+
+        # Проверка на системный диск
+        if ($selectedDrive.IsBoot -or $selectedDrive.IsSystem) {
+            [System.Windows.MessageBox]::Show("Вы не можете выбрать системный диск для форматирования.", "Ошибка", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            return
+        }
+
+        # Проверка на достаточное количество свободного места
+        $isoSize = (Get-Item $isoPath).length / 1GB
+        if ($selectedDrive.SizeRemaining / 1GB -lt $isoSize) {
+            [System.Windows.MessageBox]::Show("На выбранном USB-накопителе недостаточно свободного места для этого ISO-образа.", "Ошибка", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            return
+        }
+
+        # Запрос подтверждения перед форматированием
+        $confirmation = [System.Windows.MessageBox]::Show("Вы уверены, что хотите продолжить форматирование устройства $usbDrive?", "Подтверждение", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+        if ($confirmation -eq [System.Windows.MessageBoxResult]::No) {
+            return
+        }
+
+        [System.Windows.MessageBox]::Show("Создание загрузочной USB с разметкой $scheme ($fileSystem) и размером кластера $clusterSize...", "Информация", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+
+        # Выполнение форматирования, копирования и настройки загрузочного сектора
+        Format-Drive $usbDrive $fileSystem $clusterSize
+        Copy-IsoContents $isoPath $usbDrive
+        if ($multiBoot) {
+            Create-MultiBoot $usbDrive
+        } else {
+            if ($scheme -eq "GPT") {
+                Set-GptBootloader $usbDrive
+            } else {
+                Set-MbrBootloader $usbDrive
+            }
+        }
+
+        # Добавление инструментов восстановления, если выбрано
+        if ($recoveryTools) {
+            Add-RecoveryTools $usbDrive
+        }
+
+        [System.Windows.MessageBox]::Show("USB успешно создана!", "Успех", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+    })
+
+    $window.ShowDialog() | Out-Null
+}
+
+# Функции форматирования и загрузочной настройки
+function Format-Drive($DriveLetter, $FileSystem, $ClusterSize) {
+    Write-Host "Форматирование $DriveLetter в $FileSystem с размером кластера $ClusterSize..." -ForegroundColor Yellow
+    $diskpartScript = @"
+    select disk $DriveLetter
+    clean
+    create partition primary
+    format fs=$FileSystem unit=$ClusterSize quick
+    assign letter=$DriveLetter
+"@
+    $diskpartScript | diskpart
+}
+
+function Copy-IsoContents($IsoPath, $DriveLetter) {
+    Write-Host "Копирование содержимого ISO на $DriveLetter..." -ForegroundColor Yellow
+    Mount-DiskImage -ImagePath $IsoPath
+    $mount = Get-Volume | Where-Object { $_.DriveLetter -eq 'D' } # Виртуальный привод
+    Copy-Item "$($mount.DriveLetter):\" -Destination "$DriveLetter:\" -Recurse -Force
+    Dismount-DiskImage -ImagePath $IsoPath
+}
+
+function Create-MultiBoot($DriveLetter) {
+    Write-Host "Создание многозагрузочного USB на $DriveLetter..." -ForegroundColor Yellow
+    # Код для настройки многозагрузочных элементов, например, для GRUB или Syslinux
+}
+
+function Set-GptBootloader($DriveLetter) {
+    Write-Host "Настройка загрузчика для GPT на $DriveLetter..." -ForegroundColor Yellow
+    # Код для настройки загрузчика для GPT
+}
+
+function Set-MbrBootloader($DriveLetter) {
+    Write-Host "Настройка загрузчика для MBR на $DriveLetter..." -ForegroundColor Yellow
+    # Код для настройки загрузчика для MBR
+}
+
+function Add-RecoveryTools($DriveLetter) {
+    Write-Host "Добавление инструментов восстановления на $DriveLetter..." -ForegroundColor Yellow
+    # Код для добавления инструментов восстановления на USB
+}
+
+Show-USBForge-GUI
