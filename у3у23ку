@@ -1,0 +1,264 @@
+function Generate-RandomString {
+    param ([int]$Length)
+    $chars = "ABCDEF0123456789"
+    return -join ((1..$Length) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+}
+
+function Generate-RandomMAC {
+    return (1..6 | ForEach-Object { "{0:X2}" -f (Get-Random -Maximum 256) }) -join ":"
+}
+
+function Generate-RandomGUID {
+    return [guid]::NewGuid().ToString()
+}
+
+function Generate-RandomDate {
+    $startDate = [datetime]::Now.AddYears(-10)
+    $endDate = [datetime]::Now
+    return $startDate.AddDays((Get-Random -Maximum ($endDate - $startDate).Days)).ToString("yyyyMMdd")
+}
+
+function Generate-RandomPCName {
+    $adjectives = @("Red", "Blue", "Fast", "Smart", "Quantum", "Stealth")
+    $nouns = @("Dragon", "Phoenix", "Eagle", "Wolf", "Tiger", "Panther")
+    return "$($adjectives | Get-Random)-$($nouns | Get-Random)-$(Get-Random -Minimum 100 -Maximum 999)"
+}
+
+function Set-RegistryValue {
+    param ([string]$Path, [string]$Name, [string]$Value)
+    if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
+    Set-ItemProperty -Path $Path -Name $Name -Value $Value
+}
+
+function Backup-Registry {
+    param ([string]$BackupPath)
+    if (-not (Test-Path $BackupPath)) { New-Item -ItemType Directory -Path $backupPath | Out-Null }
+    $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+    $backupFile = "$BackupPath\RegistryBackup_$timestamp.reg"
+    reg export "HKLM" $backupFile /y
+    Write-Host "Бэкап реестра создан: $backupFile"
+    Write-Log "Бэкап реестра создан: $backupFile"
+    return $backupFile
+}
+
+function Encrypt-File {
+    param ([string]$FilePath)
+    $secureString = ConvertTo-SecureString -String (Get-Content -Path $FilePath) -AsPlainText -Force
+    $encryptedFile = "$FilePath.enc"
+    $secureString | ConvertFrom-SecureString | Set-Content -Path $encryptedFile
+    Write-Host "Файл зашифрован: $encryptedFile"
+    Write-Log "Файл зашифрован: $encryptedFile"
+}
+
+function Decrypt-File {
+    param ([string]$FilePath)
+    if (-not $FilePath.EndsWith(".enc")) {
+        Write-Host "Файл не является зашифрованным (должен иметь расширение .enc)."
+        Write-Log "Ошибка: Файл не является зашифрованным."
+        return
+    }
+    $encryptedContent = Get-Content -Path $FilePath
+    $secureString = ConvertTo-SecureString -String $encryptedContent
+    $decryptedContent = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureString))
+    $decryptedFile = $FilePath -replace "\.enc$", ".reg"
+    Set-Content -Path $decryptedFile -Value $decryptedContent
+    Write-Host "Файл расшифрован: $decryptedFile"
+    Write-Log "Файл расшифрован: $decryptedFile"
+    return $decryptedFile
+}
+
+function Restore-Registry {
+    param ([string]$BackupFile)
+    if ($BackupFile.EndsWith(".enc")) {
+        Write-Host "Обнаружен зашифрованный файл. Расшифровываю..."
+        Write-Log "Обнаружен зашифрованный файл. Расшифровываю..."
+        $BackupFile = Decrypt-File -FilePath $BackupFile
+    }
+    if (Test-Path $BackupFile -and $BackupFile.EndsWith(".reg")) {
+        reg import $BackupFile
+        Write-Host "Реестр восстановлен из: $BackupFile"
+        Write-Log "Реестр восстановлен из: $BackupFile"
+    } else {
+        Write-Host "Файл бэкапа не найден или имеет неверный формат."
+        Write-Log "Ошибка: Файл бэкапа не найден или имеет неверный формат."
+    }
+}
+
+function Save-OriginalValues {
+    $originalValues = @{
+        MAC = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0001" -Name "NetworkAddress").NetworkAddress
+        DisplayID = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Diagnostics\DiagTrack" -Name "DisplayID").DisplayID
+        DiskID = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\IDConfigDB\Hardware Profiles\0001" -Name "DiskID").DiskID
+        ComputerName = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName" -Name "ComputerName").ComputerName
+        SystemProductID = (Get-ItemProperty -Path "HKLM:\HARDWARE\DESCRIPTION\System\BIOS" -Name "SystemProductID").SystemProductID
+        ProductId = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ProductId" -Name "ProductId").ProductId
+        MachineGuid = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name "MachineGuid").MachineGuid
+        HwProfileGuid = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\IDConfigDB\Hardware Profiles\0001" -Name "HwProfileGuid").HwProfileGuid
+        MachineId = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\SQMClient" -Name "MachineId").MachineId
+        BIOSReleaseDate = (Get-ItemProperty -Path "HKLM:\HARDWARE\DESCRIPTION\System\BIOS" -Name "BIOSReleaseDate").BIOSReleaseDate
+        EFI = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources" -Name "EFI").EFI
+        DiskUUID = (Get-Disk | Where-Object { $_.Number -eq 0 }).UniqueId
+    }
+    $originalValues | Export-Clixml -Path "C:\RegistryBackups\OriginalValues.xml"
+    Write-Host "Оригинальные значения сохранены."
+    Write-Log "Оригинальные значения сохранены."
+}
+
+function Restore-OriginalValues {
+    if (Test-Path "C:\RegistryBackups\OriginalValues.xml") {
+        $originalValues = Import-Clixml -Path "C:\RegistryBackups\OriginalValues.xml"
+        Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0001" -Name "NetworkAddress" -Value $originalValues.MAC
+        Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Diagnostics\DiagTrack" -Name "DisplayID" -Value $originalValues.DisplayID
+        Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\IDConfigDB\Hardware Profiles\0001" -Name "DiskID" -Value $originalValues.DiskID
+        Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName" -Name "ComputerName" -Value $originalValues.ComputerName
+        Set-RegistryValue -Path "HKLM:\HARDWARE\DESCRIPTION\System\BIOS" -Name "SystemProductID" -Value $originalValues.SystemProductID
+        Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ProductId" -Name "ProductId" -Value $originalValues.ProductId
+        Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name "MachineGuid" -Value $originalValues.MachineGuid
+        Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\IDConfigDB\Hardware Profiles\0001" -Name "HwProfileGuid" -Value $originalValues.HwProfileGuid
+        Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\SQMClient" -Name "MachineId" -Value $originalValues.MachineId
+        Set-RegistryValue -Path "HKLM:\HARDWARE\DESCRIPTION\System\BIOS" -Name "BIOSReleaseDate" -Value $originalValues.BIOSReleaseDate
+        Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources" -Name "EFI" -Value $originalValues.EFI
+        $diskPartScript = @"
+select disk 0
+uniqueid disk id=$($originalValues.DiskUUID)
+exit
+"@
+        $diskPartScript | diskpart
+        Write-Host "Оригинальные значения восстановлены."
+        Write-Log "Оригинальные значения восстановлены."
+    } else {
+        Write-Host "Файл с оригинальными значениями не найден."
+        Write-Log "Ошибка: Файл с оригинальными значениями не найден."
+    }
+}
+
+function Change-DiskUUID {
+    $diskPartScript = @"
+select disk 0
+uniqueid disk id=$((New-Guid).ToString().ToUpper())
+exit
+"@
+    $diskPartScript | diskpart
+    Write-Host "UUID диска изменен."
+    Write-Log "UUID диска изменен."
+}
+
+function Change-Hostname {
+    param ([string]$NewHostname)
+    Rename-Computer -NewName $NewHostname -Force
+    Write-Host "Имя компьютера изменено на $NewHostname."
+    Write-Log "Имя компьютера изменено на $NewHostname."
+}
+
+function Change-SystemIdentifiers {
+    Disable-WindowsDefender
+    Save-OriginalValues
+    $randomMAC = Generate-RandomMAC
+    $randomDisplayID = Generate-RandomString -Length 12
+    $randomDiskID = Generate-RandomString -Length 16
+    $randomPCName = Generate-RandomPCName
+    $randomSMBIOS = Generate-RandomString -Length 16
+    $randomProductID = Generate-RandomString -Length 20
+    $randomMachineGUID = Generate-RandomGUID
+    $randomHwProfileGUID = Generate-RandomGUID
+    $randomMachineID = Generate-RandomString -Length 16
+    $randomBIOSDate = Generate-RandomDate
+    $randomEFI = Generate-RandomString -Length 32
+
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0001" -Name "NetworkAddress" -Value $randomMAC
+    Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Diagnostics\DiagTrack" -Name "DisplayID" -Value $randomDisplayID
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\IDConfigDB\Hardware Profiles\0001" -Name "DiskID" -Value $randomDiskID
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName" -Name "ComputerName" -Value $randomPCName
+    Set-RegistryValue -Path "HKLM:\HARDWARE\DESCRIPTION\System\BIOS" -Name "SystemProductID" -Value $randomSMBIOS
+    Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\ProductId" -Name "ProductId" -Value $randomProductID
+    Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" -Name "MachineGuid" -Value $randomMachineGUID
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\IDConfigDB\Hardware Profiles\0001" -Name "HwProfileGuid" -Value $randomHwProfileGUID
+    Set-RegistryValue -Path "HKLM:\SOFTWARE\Microsoft\SQMClient" -Name "MachineId" -Value $randomMachineID
+    Set-RegistryValue -Path "HKLM:\HARDWARE\DESCRIPTION\System\BIOS" -Name "BIOSReleaseDate" -Value $randomBIOSDate
+    Set-RegistryValue -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FirmwareResources" -Name "EFI" -Value $randomEFI
+
+    Change-DiskUUID
+    Change-Hostname -NewHostname $randomPCName
+
+    Enable-WindowsDefender
+    Write-Host "Системные идентификаторы изменены."
+    Write-Log "Системные идентификаторы изменены."
+}
+
+function Disable-WindowsDefender {
+    Set-MpPreference -DisableRealtimeMonitoring $true
+    Write-Host "Windows Defender временно отключен."
+    Write-Log "Windows Defender временно отключен."
+}
+
+function Enable-WindowsDefender {
+    Set-MpPreference -DisableRealtimeMonitoring $false
+    Write-Host "Windows Defender включен."
+    Write-Log "Windows Defender включен."
+}
+
+function Restart-System {
+    Write-Host "Система будет перезагружена через 10 секунд..."
+    Start-Sleep -Seconds 10
+    Restart-Computer -Force
+}
+
+function Shutdown-System {
+    Write-Host "Система будет выключена через 10 секунд..."
+    Start-Sleep -Seconds 10
+    Stop-Computer -Force
+}
+
+function Write-Log {
+    param ([string]$Message)
+    $logPath = "C:\RegistryChanges.log"
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Add-Content -Path $logPath -Value "$timestamp - $Message"
+}
+
+function Show-Notification {
+    param ([string]$Message)
+    Add-Type -AssemblyName System.Windows.Forms
+    [System.Windows.Forms.MessageBox]::Show($Message, "Уведомление")
+}
+
+function Show-Menu {
+    Write-Host "1. Сменить системные идентификаторы"
+    Write-Host "2. Создать бэкап реестра"
+    Write-Host "3. Зашифровать бэкап"
+    Write-Host "4. Восстановить реестр из бэкапа"
+    Write-Host "5. Восстановить оригинальные значения"
+    Write-Host "6. Перезагрузить систему"
+    Write-Host "7. Выключить систему"
+    Write-Host "8. Выйти"
+}
+
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Host "Скрипт должен быть запущен от имени администратора."
+    exit
+}
+
+$backupPath = "C:\RegistryBackups"
+if (-not (Test-Path $backupPath)) { New-Item -ItemType Directory -Path $backupPath | Out-Null }
+
+while ($true) {
+    Show-Menu
+    $choice = Read-Host "Выберите действие"
+    switch ($choice) {
+        1 { Change-SystemIdentifiers }
+        2 { Backup-Registry -BackupPath $backupPath }
+        3 {
+            $filePath = Read-Host "Введите путь к файлу для шифрования"
+            Encrypt-File -FilePath $filePath
+        }
+        4 {
+            $backupFile = Read-Host "Введите путь к файлу бэкапа"
+            Restore-Registry -BackupFile $backupFile
+        }
+        5 { Restore-OriginalValues }
+        6 { Restart-System }
+        7 { Shutdown-System }
+        8 { exit }
+        default { Write-Host "Неверный выбор. Попробуйте снова." }
+    }
+}
